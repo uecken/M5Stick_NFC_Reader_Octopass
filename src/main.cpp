@@ -5,7 +5,7 @@
 QWIICMUX i2cMux;
 MFRC522 mfrc522(0x28); 
 uint8_t channel = 0;
-static const uint8_t num_channel = 3;
+static const uint8_t num_channel = 8;
 String mode ="reader";
 String ids[num_channel];
 boolean id_exist = false;
@@ -25,8 +25,10 @@ portMUX_TYPE mutex = portMUX_INITIALIZER_UNLOCKED;
 
 
 #include <WiFi.h>
-static const char WIFI_SSID[] = "BCW710J-93152-G";
-static const char WIFI_PASSPHRASE[] = "c8533d5577f7a";
+//static const char WIFI_SSID[] = "BCW710J-93152-G";
+//static const char WIFI_PASSPHRASE[] = "c8533d5577f7a";
+static const char WIFI_SSID[] = "HUAWEIp10";
+static const char WIFI_PASSPHRASE[] = "inoueinoue";
 static const char SERVER[] = "192.168.2.184";
 
 /*
@@ -44,7 +46,7 @@ String host = "https://1hl0lg.deta.dev/reads";
 //#define TASK_DEFAULT_CORE_ID 1
 #define TASK_STACK_DEPTH 4096UL
 #define TASK_NAME_HTTP "HTTPTask"
-#define TASK_SLEEP_HTTP 5000 //10ms delay
+#define TASK_SLEEP_HTTP 10000 //10ms delay
 static void HttpLoop(void* arg);
 
 
@@ -91,6 +93,12 @@ const char* root_ca= \
 
 void setup()
 {
+
+  //WiFi感度劣化対策　https://twitter.com/uecken/likes
+  //GPIO LOW出力で改善
+  pinMode(0,OUTPUT);
+  digitalWrite(0,LOW);
+
   M5.begin();
   delay(100);
   //Wire.begin(25,21); 
@@ -100,7 +108,7 @@ void setup()
   M5.Lcd.setRotation(3); 
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextColor(WHITE, BLACK);
-  M5.Lcd.setTextSize(2); 
+  M5.Lcd.setTextSize(1); 
   while (i2cMux.begin(0x70, Wire) == false)
   {
     if(Serial.available())Serial.println("Mux not detected. Freezing...");
@@ -125,6 +133,12 @@ void setup()
   xTaskCreatePinnedToCore(NFCLoop, TASK_NAME_NFC, TASK_STACK_DEPTH, NULL, 1, NULL, 1);
   //configTime(JST, 0, "ntp.nict.jp", "ntp.jst.mfeed.ad.jp");
 
+  for (uint8_t channel = 0; channel < num_channel; channel++) {
+    i2cMux.setPort(channel);
+    delay(20);
+    mfrc522.PCD_Init();//!!!!!!removed soft reset()!!!!!!!!!
+    mfrc522.PCD_AntennaOff();
+  }
 }
 
 boolean reader_read_check[num_channel];
@@ -195,44 +209,52 @@ void loop()
 static void NFCLoop(void* arg){
   while (1) {
     uint32_t entryTime = millis();
-
     M5.update();
-    
+
     //==Reading==
     for (uint8_t channel = 0; channel < num_channel; channel++) {
+      if(channel==3)continue;
       i2cMux.setPort(channel);
-      delay(10);
+      mfrc522.PCD_AntennaOn();
+      delay(1);
       if(Serial.available())Serial.printf("CH%d | ", channel);
-      M5.Lcd.setCursor(0, 100);   
-      M5.Lcd.printf("%d ", channel);
+      M5.Lcd.setCursor(0, 110);   
+      M5.Lcd.println(channel);
       
 
-      mfrc522.PCD_Init();//!!!!!!removed soft reset()!!!!!!!!!
-      delay(10);
+      //mfrc522.PCD_Init();//!!!!!!removed soft reset()!!!!!!!!!
+      //delay(50);
 
-      //==========何故か一回置きにしか読み取れない===========
-      if (!mfrc522.PICC_IsNewCardPresent() ||!mfrc522.PICC_ReadCardSerial()) {
-      //if (!mfrc522.PICC_ReadCardSerial()) {
-          delay(10);
-          //eader_read_check[channel] = false;
-          //return;
-      }else{
-        if(Serial.available())Serial.print(" // ");
-        String s = "";
-        for (byte i = 0; i < mfrc522.uid.size;i++) {  // Output the stored UID data.  将存储的UID数据输出
-          const auto d = mfrc522.uid.uidByte[i];
-          s += String(d < 0x10 ? "0" : "") + String(d, HEX);
+      if (mfrc522.PICC_IsNewCardPresent()) {
+        if(mfrc522.PICC_ReadCardSerial()){
+          if(Serial.available())Serial.print(" // ");
+          String s = "";
+          for (byte i = 0; i < mfrc522.uid.size;i++) {  // Output the stored UID data.  将存储的UID数据输出
+            const auto d = mfrc522.uid.uidByte[i];
+            s += String(d < 0x10 ? "0" : "") + String(d, HEX);
+          }
+          M5.Lcd.setCursor(channel*10+10, 110);   
+          M5.Lcd.print(String(channel));
+          M5.Lcd.setCursor(channel*10+10, 120);   
+          M5.Lcd.print(String(channel));
+          M5.update();
+          if(Serial.available())Serial.print(s);
+          if(Serial.available())Serial.print(" / ");
+          ids[channel] = String(s);
+          reader_read_check[channel] = true;
+          id_exist = true;
+          //httpGet("registManID",s);
+          //httpPost();
         }
-        if(Serial.available())Serial.print(s);
-        if(Serial.available())Serial.print(" / ");
-        ids[channel] = String(s);
-        reader_read_check[channel] = true;
-        id_exist = true;
-        //httpGet("registManID",s);
-        //httpPost();
       }
+
+     mfrc522.PCD_AntennaOff();
     }
     if(Serial.available())Serial.println();
+    M5.Lcd.setCursor(0, 110);   
+    //M5.Lcd.println("  ");
+    M5.Lcd.println("             ");
+    M5.update();
     uint32_t elapsed_time = millis() - entryTime; 
     int32_t sleep = TASK_SLEEP_NFC  - elapsed_time;
     vTaskDelay((sleep > 0) ? sleep : 0);
@@ -264,15 +286,16 @@ static void HttpLoop(void* arg){
       if(octopass_flg){
         //M5.dis.drawpix(0, dispColor(0, 0, 255)); //LED（指定色)
         #ifdef _M5STICKC_H_
-        M5.Lcd.setCursor(0, 60);                 //x,y,font 7:48ピクセル7セグ風フォント
+        M5.Lcd.setCursor(0, 80);                 //x,y,font 7:48ピクセル7セグ風フォント
         M5.Lcd.print("octo-pass!!!"); // 時分を表示
         #endif
         //M5.dis.drawpix(0, dispColor(0, 0, 0)); //LED（指定色)
         if(Serial.available())Serial.print("octo-pass!!!");
       }else{
         #ifdef _M5STICKC_H_
-
-        M5.Lcd.setCursor(0, 60);
+        M5.Lcd.setCursor(0, 80);                 //x,y,font 7:48ピクセル7セグ風フォント
+        M5.Lcd.print("               "); // 時分を表示
+        M5.Lcd.setCursor(0, 120);
         M5.Lcd.print("                "); // 時分を表示
         #endif
       }
